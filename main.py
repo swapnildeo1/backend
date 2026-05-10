@@ -1,97 +1,85 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
-import datetime
-import uvicorn
-import pandas as pd
-import random
-from engine import TradingEngine
+"""Primary application entrypoint."""
 
-app = FastAPI(title="QuantumTrade Alert Backend")
-engine = TradingEngine()
+from __future__ import annotations
 
-# Mock Database
-class Settings(BaseModel):
-    mobile_number: str
-    gateway: str
-    indices: List[str]
+import locale
+import logging
+import os
+import sys
+import warnings
 
-current_settings = Settings(
-    mobile_number="9876543210",
-    gateway="whatsapp",
-    indices=["NIFTY", "BANKNIFTY"]
-)
+logger = logging.getLogger(__name__)
 
-# Mock Data Generator
-def generate_mock_ohlcv():
-    # Generates a DataFrame with random but somewhat realistic price action for testing
-    data = []
-    base_price = 22000
-    for i in range(50):
-        open_price = base_price + random.uniform(-20, 20)
-        high_price = open_price + random.uniform(0, 50)
-        low_price = open_price - random.uniform(0, 50)
-        close_price = open_price + random.uniform(-40, 40)
-        volume = random.randint(10000, 50000)
-        # Force a breakout on the last candle randomly
-        if i == 49:
-            close_price = open_price + random.uniform(50, 100) # Bullish breakout
-            volume = random.randint(80000, 150000) # Volume spike
-        data.append([open_price, high_price, low_price, close_price, volume])
-        base_price = close_price
-        
-    return pd.DataFrame(data, columns=['open', 'high', 'low', 'close', 'volume'])
 
-def send_alert_via_gateway(alert_data: dict, phone: str, gateway: str):
-    """
-    Mock function to simulate sending SMS/WhatsApp via Fast2SMS / Twilio
-    """
-    message = f"""🚨 BREAKOUT ALERT 🚨
-Index: {alert_data['asset']} ({alert_data['direction'].capitalize()} Momentum)
-Risk Level: {alert_data['risk']} (Volatile Market)
-Timeframe to Target: {alert_data['targetTime']}
+# Do not import and use main() directly! Using it directly is actively
+# discouraged by pip's maintainers. The name, location and behavior of
+# this function is subject to change, so calling it directly is not
+# portable across different pip versions.
 
-Buy: {alert_data['strikes']}
-Entry Price: {alert_data['entry']}
-Stop Loss: {alert_data['sl']}
-Targets: T1: {alert_data['targets'][0]['val']}, T2: {alert_data['targets'][1]['val']}, T3: {alert_data['targets'][2]['val']}
-"""
-    print(f"\n--- DISPATCHING ALERT VIA {gateway.upper()} TO {phone} ---")
-    print(message)
-    print("---------------------------------------------------\n")
+# In addition, running pip in-process is unsupported and unsafe. This is
+# elaborated in detail at
+# https://pip.pypa.io/en/stable/user_guide/#using-pip-from-your-program.
+# That document also provides suggestions that should work for nearly
+# all users that are considering importing and using main() directly.
 
-@app.get("/api/alerts")
-def get_live_alerts():
-    """
-    Endpoint to trigger analysis and return active alerts
-    """
-    alerts = []
-    for symbol in current_settings.indices:
-        # 1. Fetch mock data (In real app, fetch from Dhan/Angel One API)
-        df = generate_mock_ohlcv()
-        
-        # 2. Run Analysis
-        result = engine.analyze_data(df, timeframe="1H", symbol=symbol)
-        
-        if result:
-            result['id'] = random.randint(1000, 9999)
-            result['timestamp'] = datetime.datetime.now().isoformat()
-            alerts.append(result)
-            
-            # Dispatch async alert
-            send_alert_via_gateway(result, current_settings.mobile_number, current_settings.gateway)
-            
-    return {"status": "success", "alerts": alerts}
+# However, we know that certain users will still want to invoke pip
+# in-process. If you understand and accept the implications of using pip
+# in an unsupported manner, the best approach is to use runpy to avoid
+# depending on the exact location of this entry point.
 
-@app.post("/api/settings")
-def update_settings(settings: Settings):
-    global current_settings
-    current_settings = settings
-    return {"status": "success", "message": "Settings updated"}
+# The following example shows how to use runpy to invoke pip in that
+# case:
+#
+#     sys.argv = ["pip", your, args, here]
+#     runpy.run_module("pip", run_name="__main__")
+#
+# Note that this will exit the process after running, unlike a direct
+# call to main. As it is not safe to do any processing after calling
+# main, this should not be an issue in practice.
 
-@app.get("/api/settings")
-def get_settings():
-    return current_settings
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+def main(args: list[str] | None = None) -> int:
+    # NOTE: Lazy imports to speed up import of this module,
+    # which is imported from the pip console script. This doesn't
+    # speed up normal pip execution, but might be important in the future
+    # if we use ``multiprocessing`` module,
+    # which imports __main__ for each spawned subprocess.
+    from pip._internal.cli.autocompletion import autocomplete
+    from pip._internal.cli.main_parser import parse_command
+    from pip._internal.commands import create_command
+    from pip._internal.exceptions import PipError
+    from pip._internal.utils import deprecation
+
+    if args is None:
+        args = sys.argv[1:]
+
+    # Suppress the pkg_resources deprecation warning
+    # Note - we use a module of .*pkg_resources to cover
+    # the normal case (pip._vendor.pkg_resources) and the
+    # devendored case (a bare pkg_resources)
+    warnings.filterwarnings(
+        action="ignore", category=DeprecationWarning, module=".*pkg_resources"
+    )
+
+    # Configure our deprecation warnings to be sent through loggers
+    deprecation.install_warning_logger()
+
+    autocomplete()
+
+    try:
+        cmd_name, cmd_args = parse_command(args)
+    except PipError as exc:
+        sys.stderr.write(f"ERROR: {exc}")
+        sys.stderr.write(os.linesep)
+        sys.exit(1)
+
+    # Needed for locale.getpreferredencoding(False) to work
+    # in pip._internal.utils.encoding.auto_decode
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error as e:
+        # setlocale can apparently crash if locale are uninitialized
+        logger.debug("Ignoring error %s when setting locale", e)
+    command = create_command(cmd_name, isolated=("--isolated" in cmd_args))
+
+    return command.main(cmd_args)
